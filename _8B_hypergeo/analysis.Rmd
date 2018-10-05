@@ -1,0 +1,240 @@
+---
+title: "Comparison of E(z) mutant brain expression profiles and age-correlated probesets indicates a \"younger\" brain"
+author: "Jason Kennerdell"
+date: "9/25/2017"
+output: pdf_document
+---
+```{r, "needed packages", include=FALSE, warning=FALSE, message=FALSE}
+library(DESeq2); library(ggplot2); library(grid); library(gridExtra); library(genefilter)
+```
+
+### Input the data and metadata:
+```{r, "input sampleTable", warning=FALSE, message=FALSE, cache=T}
+inpath <- "~/Desktop/brain"
+outpath <- "~/Desktop/brain/_8B_hypergeo"
+setwd(inpath)
+files <- list.files()
+htseq_files <- files[grepl("^JKL.*txt$", files)]
+sampleNames <- read.csv("EzSampleNames.csv")
+sampleTable <- data.frame(fileName = htseq_files,
+                          stringsAsFactors=FALSE)
+sampleTable$Library <- gsub("-counts.txt", "", sampleTable$fileName)
+sampleTable$Library <- gsub("b", "", sampleTable$Library)
+sampleTable$seq.batch <- ifelse(grepl("b", sampleTable$fileName), "B", "A")
+sampleTable$seq.batch <- paste(sampleTable$Library, sampleTable$seq.batch)
+sampleTable <- merge(sampleTable[,c(1,3)], sampleNames, by = "seq.batch")
+sampleTable$genotype <- gsub("-.*$", "", sampleTable$Sample)
+sampleTable$genotype <- factor(sampleTable$genotype, levels = c("w", "Ez"))
+sampleTable$Temp <- gsub("[A-Z, a-z, -]", "", sampleTable$Sample)
+sampleTable$Temp <- factor(sampleTable$Temp, levels = c("25", "29"))
+sampleTable$rep <- gsub("^.*-", "", sampleTable$Sample)
+sampleTable$condition <- paste(sampleTable$genotype, sampleTable$Temp, sep = "-")
+sampleTable
+```
+
+### Set up the statistical model
+```{r, "design"}
+design <- formula(~ Temp + genotype)
+```
+
+## DESEq2 Statistics
+```{r, "statistics", cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, directory = inpath, design = design)
+# Combine the technical replicates (different runs) by adding the count
+# totals for each gene across the two runs:
+dds <- collapseReplicates(dds, groupby=dds$Library, run = dds$batch)
+dds <- DESeq(dds)
+# What does the data look like?
+head(assay(dds)) # This is the sum of the two runs HTSeq-count output!
+# What are the columns?
+colData(dds)
+results <- results(dds, alpha=0.05)
+results$ensembl <- rownames(results)
+```
+
+### Prepare MA plots:
+```{r, cache=T}
+# For Maximum likelihood estimates:
+resultsMLE <- results(dds, addMLE=TRUE, alpha = 0.05)
+par(mfrow=c(1,2))
+plotMA(resultsMLE, MLE=TRUE, alpha = 0.05, main="unshrunken LFC", ylim=c(-10,10))
+plotMA(results, alpha = 0.05, main="shrunken LFC", ylim=c(-5,8))
+```
+
+### Add Annotation
+```{r, cache=T}
+# Add usefull gene names:
+library(biomaRt)
+
+# Add FBgn Names
+#listMarts(host="aug2017.archive.ensembl.org")
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org")
+#listDatasets(mart)
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org",
+               dataset = "dmelanogaster_gene_ensembl")
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene", "external_gene_name", "flybasecgid_gene"), filters = "ensembl_gene_id", values = results$ensembl, mart = mart)
+idx <- match(results$ensembl, genemap$ensembl_gene_id)
+results$entrez <- genemap$entrezgene[idx]
+results$geneSymbol <- genemap$external_gene_name[idx]
+results$cg <- genemap$flybasecgid_gene[idx]
+```
+
+
+# Import Age-Correlated Genes and look for how these genes change in E(z) mutants:
+```{r}
+library(xlsx)
+ageCorGenes <- read.xlsx(paste(inpath, "nature10810-s2.xls", sep="/"), 
+                         sheetName="Age_Gene_tbl", startRow=3, endRow=177)
+
+# Add FBgn Names
+library(biomaRt)
+genemap2 <- getBM(attributes = c("affy_drosophila_2", "ensembl_gene_id", "entrezgene", "flybasecgid_gene"),
+                  filters = "affy_drosophila_2", 
+                  values = as.character(ageCorGenes$Probeset.ID), 
+                  mart = mart)
+
+idx2 <- match(ageCorGenes$Probeset.ID, genemap2$affy_drosophila_2)
+ageCorGenes$ensembl <- genemap2$ensembl_gene_id[idx2]
+ageCorGenes$geneSymbol <- genemap2$external_gene_name[idx2]
+ageCorGenes$cg <- genemap2$flybasecgid_gene[idx2]
+
+# Fix a problem getting the FBgn names
+ageCorGenes[is.na(ageCorGenes$ensembl),]
+# of CG10494:
+ageCorGenes[140, 12] <- "FBgn0034634"
+# CG5953 Or copia/GIP
+ageCorGenes[50, 12] <- "FBgn0032587" # OR FBgn0013437
+# Two others that are not associated with FBgn
+ageCorGenes[is.na(ageCorGenes$ensembl),]
+
+ageCorGenesPos <- ageCorGenes[ageCorGenes$DIR2==1,]
+ageCorGenesNeg <- ageCorGenes[ageCorGenes$DIR2==-1,]
+
+par(mfrow=c(1,2))
+hist(results[rownames(results)%in%ageCorGenesPos$ensembl,]$log2FoldChange, breaks=100, 
+     main="Positively correlated Aging Genes", xlab="log2FoldChange in E(z) experiment")
+hist(results[rownames(results)%in%ageCorGenesNeg$ensembl,]$log2FoldChange, breaks=100,
+     main="Negatively correlated Aging Genes", xlab="log2FoldChange in E(z) experiment")
+
+#######################Prepare Publication Plot###########################
+jpeg(file=paste(outpath, "Fig8b_Positively_age_Cor_in_Ez_MLE.jpg",
+                sep="/"),
+     quality=100,
+     res=300,
+     width=1440, 
+     height=960)
+resultsMLE$ageCorGenPos <- rownames(resultsMLE) %in% ageCorGenesPos$ensembl
+quartzFonts(arial=c("Arial", "Arial Italic", "Arial Bold", "Arial Bold Italic"))
+par(mai=c(0,0,0,0), mar=c(2,4.5,3,1)+.5, family="arial")
+plotMA(resultsMLE, alpha = 0.05, ylim=c(-3,3), 
+       colNonSig = "gray", colSig = "black",
+       MLE=TRUE, colLine = "darkgrey", 
+       las=1, cex.lab=1, cex.axis=1, cex.main=1.5, 
+       ylab=expression(""), xlab="", 
+       xaxp=c(1,2,1), xaxt="n",
+       main=""
+       )
+axis(1, at=c(1, 10, 100, 1000, 10000), labels=c(1, 10, 100, 1000, 10000), cex.axis=1)
+with(resultsMLE[resultsMLE$ageCorGenPos==TRUE,], 
+     {points(baseMean, lfcMLE, col = "red", cex=1, lwd=1)})
+dev.off()
+##########################################################################
+plotMA(resultsMLE, alpha = 0.05, ylim=c(-3,3), colNonSig = "gray", colSig = "black",
+       colLine = "darkgrey", MLE=TRUE,
+       ylab=expression("log"[2]*" (fold change)"),
+       main="Positively Age \nCorrelated Genes")
+with(resultsMLE[resultsMLE$ageCorGenPos==TRUE,], {points(baseMean, lfcMLE,
+                                                         col = "red", cex=1, lwd=1)})
+
+jpeg(file=paste(outpath, "Positively_age_Cor_in_Ez_MAP.jpg", sep="/"), 
+     width=360, height=240)
+results$ageCorGenPos <- rownames(results) %in% ageCorGenesPos$ensembl
+plotMA(results, alpha = 0.01, ylim=c(-2,2), colNonSig = "gray", colSig = "black", colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), 
+       main="Positively Age \nCorrelated Genes")
+with(results[results$ageCorGenPos==TRUE,], {points(baseMean, 
+                                                   log2FoldChange, 
+                                                   col = "red", cex=1, lwd=2)})
+dev.off()
+
+plotMA(results, alpha = 0.01, ylim=c(-2,2), colNonSig = "gray", colSig = "black", colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), 
+       main="Positively Age \nCorrelated Genes")
+with(results[results$ageCorGenPos==TRUE,], {points(baseMean, 
+                                                   log2FoldChange, 
+                                                   col = "red", cex=1, lwd=2)})
+#######################Prepare Publication Plot###########################
+jpeg(file=paste(outpath, "FigS5e_Negatively_age_Cor_in_Ez_MLE.jpg", sep="/"), 
+     width=360, height=240)
+resultsMLE$ageCorGenNeg <- rownames(resultsMLE) %in% ageCorGenesNeg$ensembl
+par(mai=c(0,0,0,0), mar=c(2,4,3,3)+.5)
+plotMA(resultsMLE, alpha = 0.05, ylim=c(-3,3), colNonSig = "gray", colSig = "black",
+       colLine = "darkgrey", MLE=TRUE, las=1,
+       ylab=expression("log"[2]*" (fold change)"),xlab="", xaxp=c(1,2,1), xaxt="n",
+       #main="Negatively Correlated Age \nGenes are Unchanged"
+       main=""
+       )
+axis(1, at=c(1, 10, 100, 1000, 10000), labels=c(1, 10, 100, 1000, 10000))
+with(resultsMLE[resultsMLE$ageCorGenNeg==TRUE,], {points(baseMean, lfcMLE,
+                                                         col = "red", cex=1, lwd=1)})
+dev.off()
+##########################################################################
+plotMA(resultsMLE, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black",
+       colLine = "darkgrey", MLE=TRUE,
+       ylab=expression("log"[2]*" (fold change)"),
+       main="Negatively Age \nCorrelated Genes")
+with(resultsMLE[resultsMLE$ageCorGenNeg==TRUE,], {points(baseMean, lfcMLE,
+                                                         col = "red", cex=1, lwd=1)})
+
+jpeg(file=paste(outpath, "Negatively_age_Cor_in_Ez_MAP.jpg", sep="/"), 
+     width=360, height=240)
+results$ageCorGenNeg <- rownames(results) %in% ageCorGenesNeg$ensembl
+plotMA(results, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), 
+       main="Negatively Age \nCorrelated Genes")
+with(results[results$ageCorGenNeg==TRUE,], {points(baseMean, log2FoldChange, 
+                                                         col = "red", cex=1, lwd=2)})
+dev.off()
+plotMA(results, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), 
+       main="Negatively Age \nCorrelated Genes")
+with(results[results$ageCorGenNeg==TRUE,], {points(baseMean, log2FoldChange, 
+                                                         col = "red", cex=1, lwd=2)})
+```
+
+
+# Is this result significant? Using the hypergeometric test
+```{r, "hypergeometric test"}
+ageCorResults <- results[results$ageCorGenPos==TRUE,]
+ageCorResults <- ageCorResults[!is.na(ageCorResults$padj),]
+myGenes <- ageCorResults[ageCorResults$log2FoldChange < -0.5 & ageCorResults$padj < 0.05,]
+# Get number of Age Correlated Genes that are downregulated in E(z) mutants
+dim(myGenes)[1]
+
+# Hypergeometric test for over-representation:
+phyper(15, 108, 18845, 317, lower.tail=FALSE)
+#      upInEz*and*AgeRegulated - 1 = 15
+#      number of age correlated genes from microarray data = 108
+#      number of genes NOT age correlated genes from microarray data = 18953-108
+#      SampleSize = 317 (genes downregulated in E(z) mutants)
+
+
+# Hypergeometric test for under-representation:
+phyper(16, 108, 18845, 317, lower.tail=TRUE)
+# Fisher Exact test for over-representation:
+contingency.matrix <- rbind(c(16,92), c(301, 18544))
+contingency.matrix
+fisher.test(contingency.matrix, alternative="greater")$p.value
+```
+
+Save image
+```{r}
+save.image(file="hyperGeo.RData")
+```
+
+
+
+
+

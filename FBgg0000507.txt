@@ -1,0 +1,12 @@
+#SUBMITTED ID	NAME	SYMBOL
+FBgn0001223	Heat shock protein 22	Hsp22
+FBgn0001224	Heat shock protein 23	Hsp23
+FBgn0001225	Heat shock protein 26	Hsp26
+FBgn0001226	Heat shock protein 27	Hsp27
+FBgn0001227	Heat shock gene 67Ba	Hsp67Ba
+FBgn0001229	Heat shock gene 67Bc	Hsp67Bc
+FBgn0011296	lethal (2) essential for life	l(2)efl
+FBgn0035982	-	CG4461
+FBgn0035817	-	CG7409
+FBgn0031037	-	CG14207
+FBgn0032181	-	CG13133

@@ -1,0 +1,112 @@
+---
+title: "Analysis of GSE25007 to prepare a ranked list of genes by their correlation with age."
+author: "Jason Kennerdell"
+date: "9/19/2017"
+output: pdf_document
+---
+
+### Synopsis:
+  Here I am ranking genes according to the degree to which they are correlated with age. This list will be used with the orederedList package in another script to deterimine whether there is significant overlap between genes differentially expressed in *E(z)* mutant brains and genes correlated with age.
+  
+### Load needed packages
+```{r, message=FALSE, warning=FALSE}
+library(ggplot2); library(limma); library(GEOquery); library(affy); library(gcrma);library(affyPLM); library(knitr); library(plyr)
+library(annotate); library(drosophila2.db)
+```
+
+
+### Download data from GEO
+```{r, cache=TRUE, "geo"}
+inpath <- "~/Desktop/brain/GSE25007/GSE25007"
+# download the raw CEL files:
+while(!file.exists(file.path(inpath, "GSE25007_RAW.tar"))){
+  eList2 <- getGEOSuppFiles("GSE25007", makeDirectory=F, baseDir=inpath)
+  }
+```
+
+
+### Unzip data from GEO
+```{r, "tar"}
+tar <- grep("tar$", list.files(inpath), value=T)
+while(!file.exists(file.path(inpath, "GSM614349.CEL"))){
+  setwd(inpath)
+  untar(file.path(inpath, tar))
+  CEL_gz <- grep("CEL.gz$", list.files(inpath), value=TRUE)
+  lapply(file.path(inpath, CEL_gz), gunzip, remove=FALSE)
+}
+CEL <- grep("CEL$", list.files(inpath), value=TRUE)
+```
+
+
+### Calculate correlations and coefficients:
+```{r, warning=FALSE, message=FALSE}
+setwd(inpath)
+raw.data <- read.affybatch(CEL)
+eset <- gcrma(raw.data)
+dat <- exprs(eset)
+            
+# Calculate p value for each probeset, to be applied by row of the matrix:
+getP <- function(x){
+        age = c(3,3,3,30,30,30,60,60,60)
+        fit <- lm(formula = x ~ age)
+        summary(fit)$coefficients[2,4]
+}
+getBeta <- function(x){
+        age = c(3,3,3,30,30,30,60,60,60)
+        fit <- lm(formula = x ~ age)
+        summary(fit)$coefficients[2,1]
+}
+sumDat <- data.frame(row.names=rownames(dat))
+sumDat$p.value <- apply(dat, MARGIN=1, FUN=getP)
+sumDat$beta <- apply(dat, MARGIN=1, FUN=getBeta)
+#Remove AFFX probesets
+sumDat <- sumDat[!grepl("^AFFX-", rownames(sumDat)),]
+#Remove NaN: In some probesets, all values are the same across age, giving pvalue NaN
+sumDat <- sumDat[!is.nan(sumDat$p.value),]
+
+sumDat <- sumDat[order(sumDat$p.value),]
+```
+
+### Add Ensembl gene names for each probeset
+```{r, "add gene names", warning=FALSE}
+probes_1 <- as.character(rownames(sumDat))
+sumDat$ensembl <- mapIds(drosophila2.db, keys=probes_1, 
+                            c("ENSEMBL"), keytype="PROBEID", multiVals="asNA")
+sumDat <- sumDat[!is.na(sumDat$ensembl),]
+```
+
+### Compress genes into one row per ensembl name
+```{r}
+sumDat$probeset <- rownames(sumDat)
+
+compressed_sumDat <- ddply(sumDat, .(ensembl), 
+            summarize, beta=mean(beta), p.value=mean(p.value))
+
+# show how it worked:
+sumDat[sumDat$ensembl=="FBgn0000015",]
+compressed_sumDat[compressed_sumDat$ensembl=="FBgn0000015",]
+```
+
+#Add a product to sort the list by:
+```{r}
+compressed_sumDat$prod <- -log10(compressed_sumDat$p.value)*compressed_sumDat$beta
+compressed_sumDat <- compressed_sumDat[order(compressed_sumDat$prod, decreasing=T),]
+```
+
+# Prepare a ranked gene list entirely by p value:
+```{r}
+upgenes <- compressed_sumDat[compressed_sumDat$beta>0,]
+upgenes <- upgenes[order(upgenes$p.value),]
+head(upgenes)
+tail(upgenes)
+dngenes <- compressed_sumDat[compressed_sumDat$beta<=0,]
+dngenes <- dngenes[order(dngenes$p.value, decreasing=T),]
+head(dngenes)
+tail(dngenes)
+lst <- rbind(upgenes, dngenes)
+write.csv(file=file.path("~/Desktop/brain/GSE25007",
+                         "ranked_aging_correlated_genes_pvalue_only.csv"), 
+          lst)
+```
+
+

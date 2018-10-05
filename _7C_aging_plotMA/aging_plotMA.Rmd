@@ -1,0 +1,151 @@
+---
+title: "MA Plots of Differentially Expressed Genes with Age"
+author: "Jason Kennerdell"
+date: "8/01/2017"
+output: pdf_document
+---
+```{r, "needed packages", include=FALSE, warning=FALSE, message=FALSE}
+library(DESeq2); library(ggplot2); library(grid); library(gridExtra); library(genefilter); library(biomaRt)
+```
+
+### Input the data and metadata:
+```{r, "input sampleTable", warning=FALSE, message=FALSE}
+inpath <- "~/Desktop/brain"
+outpath <- "~/Desktop/brain/_7C_aging_plotMA"
+setwd(inpath)
+files <- list.files()
+htseq_files <- files[grepl("^JKL.*txt$", files)]
+sampleNames <- read.csv("SampleNames.csv")
+sampleTable <- data.frame(fileName = htseq_files,
+                          stringsAsFactors=FALSE)
+sampleTable$Library <- gsub("-counts.txt", "", sampleTable$fileName)
+sampleTable$Library <- gsub("b", "", sampleTable$Library)
+sampleTable$seq.batch <- ifelse(grepl("b", sampleTable$fileName), "B", "A")
+sampleTable$seq.batch <- paste(sampleTable$Library, sampleTable$seq.batch)
+sampleTable <- merge(sampleTable, sampleNames, by = "seq.batch")
+sampleTable$genotype <- gsub("-.*$", "", sampleTable$Sample)
+sampleTable$genotype <- gsub("JKLY.... ", "", sampleTable$genotype)
+sampleTable$genotype <- gsub("Pcl\\[4\\]/", "", sampleTable$genotype)
+sampleTable$genotype <- gsub("\\[5\\]", "", sampleTable$genotype)
+sampleTable$genotype <- gsub("\\[1118\\]", "", sampleTable$genotype)
+sampleTable$genotype <- factor(sampleTable$genotype, levels = c("w", "Ez", "Pcl"))
+sampleTable$Temp <- gsub("[A-Z, a-z, -]", "", sampleTable$Sample)
+sampleTable$Temp <- gsub("^11.*$", "25", sampleTable$Temp)
+sampleTable$Temp <- factor(sampleTable$Temp, levels = c("25", "29"))
+sampleTable$age <- gsub("JKLY.*$", "3d", sampleTable$Sample)
+sampleTable$age <- gsub("^[a-zA-z].*$", "20d", sampleTable$age)
+sampleTable$age <- factor(sampleTable$age)
+sampleTable$age <- factor(sampleTable$age, levels = c("3d", "20d"))
+sampleTable$condition <- paste(sampleTable$genotype, sampleTable$Temp, sampleTable$age, sep = "-")
+# Select only the samples of interest:
+sampleTable <- sampleTable[sampleTable$genotype == "w" & sampleTable$Temp == "25",]
+sampleTable
+```
+
+### Set up the statistical model:
+```{r, "design"}
+design <- formula(~ age)
+```
+
+
+```{r, "statistics", cache=TRUE}
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, directory = inpath, design = design)
+dds <- collapseReplicates(dds, groupby=dds$Library.x, run = dds$batch)
+dds <- DESeq(dds)
+results <- results(dds, alpha=0.05)
+results$ensembl <- rownames(results)
+hist(results$pvalue, breaks=20)
+summary(results)
+```
+
+## Prepare MA Plots
+```{r}
+# Some MA plots:
+# for Maximum likelihood estimates:
+resultsMLE <- results(dds, addMLE=TRUE, alpha = 0.05)
+par(mfrow=c(1,2))
+plotMA(resultsMLE, MLE=TRUE, alpha = 0.05, main="unshrunken LFC", ylim=c(-10,10))
+plotMA(results, alpha = 0.05, main="shrunken LFC", ylim=c(-5,8))
+```
+
+```{r, cache=T}
+# Add usefull gene names:
+# Get the archived version:
+mart = useMart("ENSEMBL_MART_ENSEMBL",
+               host="aug2017.archive.ensembl.org")
+#x <- listDatasets(mart)
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org",
+               dataset = "dmelanogaster_gene_ensembl")
+#listAttributes(mart)
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene", "flybasecgid_gene", 
+                                 "external_gene_name"),
+                  filters = "ensembl_gene_id", 
+                  values = results$ensembl,
+                  mart = mart)
+
+idx <- match(results$ensembl, genemap$ensembl_gene_id)
+results$entrez <- genemap$entrezgene[idx]
+results$geneSymbol <- genemap$external_gene_name[idx]
+results$cg <- genemap$flybasecgid_gene[idx]
+```
+
+# Prepare a plot highlighting changes in small hsp genes:
+```{r}
+small_hsp <- read.delim(file.path(inpath, "FBgg0000507.txt"))
+colnames(small_hsp) <- c("FlyBase", "NAME", "SYMBOL")
+
+
+jpeg(file=paste(outpath, "aging_sHSP_MAP.jpg", sep="/"), width=240, height=240)
+# Small HSP Family
+results$shsp <- results$ensembl %in% small_hsp$FlyBase
+plotMA(results, alpha = 0.05, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       ylab=expression("log"[2]*" (fold change)"), main="Small Heat Shock Proteins are \ndownregulated with age")
+with(results[results$shsp==TRUE,], {points(baseMean, log2FoldChange, col = "red", cex=1, lwd=2)})
+dev.off()
+```
+
+# Try without shrinkage:
+```{r}
+# Small HSP Family
+#####################Prepare Publication Plot###################################
+jpeg(file=paste(outpath, "Fig7c_aging_sHSP_MLE.jpg", sep="/"), 
+     quality=100,
+     res=300,
+     width=960, 
+     height=960)
+resultsMLE$shsp <- rownames(resultsMLE) %in% small_hsp$FlyBase
+par(mai=c(0,0,0,0), mar=c(2,4.5,3,1) + 0.5)
+plotMA(resultsMLE, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       MLE=TRUE, colLine = "darkgrey", las=1, cex.lab=1, cex.axis=1, cex.main=1.5,
+       ylab=expression(""), xlab = "", xaxp=c(1,2,1), xaxt="n",
+       main="")
+axis(1, at=c(1,10,100,1000,10000), labels=c(1,10,100,1000,10000), cex.axis=1)
+with(resultsMLE[resultsMLE$shsp==TRUE,], {points(baseMean, lfcMLE, col = "red", cex=1, lwd=3)})
+dev.off()
+
+# Now as Cairo pdf:
+cairo_pdf(file=paste(outpath, "Fig7c_aging_sHSP_MLE.pdf", sep="/"))
+resultsMLE$shsp <- rownames(resultsMLE) %in% small_hsp$FlyBase
+par(mai=c(0,0,0,0), mar=c(0,4.5,3,1) + 0.5)
+plotMA(resultsMLE, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       MLE=TRUE, colLine = "darkgrey", las=1, cex.lab=4, cex.axis=4, cex.main=1.5,
+       ylab=expression(""), xlab = "", xaxp=c(1,2,1), xaxt="n",
+       main="")
+axis(1, at=c(1,10,100,1000,10000), labels=c(1,10,100,1000,10000), cex.axis=3, outer=T)
+with(resultsMLE[resultsMLE$shsp==TRUE,], {points(baseMean, lfcMLE, col = "red", cex=1, lwd=3)})
+dev.off()
+###################################################################################
+
+plotMA(resultsMLE, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       MLE=TRUE, colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change)"), xlab = "Mean expression", 
+       main="HSP20 Family is \ndownregulated with age")
+with(resultsMLE[resultsMLE$shsp==TRUE,], {points(baseMean, lfcMLE, col = "red", cex=1, lwd=2)})
+
+```
+
+```{r}
+Sys.info()
+```
+
+

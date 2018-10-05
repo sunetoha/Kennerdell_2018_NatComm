@@ -1,0 +1,145 @@
+---
+title: "Prepare MA plots for the E(z) mutant experiment"
+author: "Jason Kennerdell"
+date: "9/25/2017"
+output: pdf_document
+---
+```{r, "needed packages", include=FALSE, warning=FALSE, message=FALSE}
+library(DESeq2); library(ggplot2); library(grid); library(gridExtra); library(genefilter)
+```
+
+### Input the data and metadata:
+```{r, "input sampleTable", warning=FALSE, message=FALSE, cache=T}
+inpath <- "~/Desktop/brain"
+outpath <- "~/Desktop/brain/_7B_Ez_plotMA"
+setwd(inpath)
+files <- list.files()
+htseq_files <- files[grepl("^JKL.*txt$", files)]
+sampleNames <- read.csv("EzSampleNames.csv")
+sampleTable <- data.frame(fileName = htseq_files,
+                          stringsAsFactors=FALSE)
+sampleTable$Library <- gsub("-counts.txt", "", sampleTable$fileName)
+sampleTable$Library <- gsub("b", "", sampleTable$Library)
+sampleTable$seq.batch <- ifelse(grepl("b", sampleTable$fileName), "B", "A")
+sampleTable$seq.batch <- paste(sampleTable$Library, sampleTable$seq.batch)
+sampleTable <- merge(sampleTable[,c(1,3)], sampleNames, by = "seq.batch")
+sampleTable$genotype <- gsub("-.*$", "", sampleTable$Sample)
+sampleTable$genotype <- factor(sampleTable$genotype, levels = c("w", "Ez"))
+sampleTable$Temp <- gsub("[A-Z, a-z, -]", "", sampleTable$Sample)
+sampleTable$Temp <- factor(sampleTable$Temp, levels = c("25", "29"))
+sampleTable$rep <- gsub("^.*-", "", sampleTable$Sample)
+sampleTable$condition <- paste(sampleTable$genotype, sampleTable$Temp, sep = "-")
+sampleTable
+```
+
+### Set up the statistical model:
+```{r, "design"}
+design <- formula(~ Temp + genotype)
+```
+
+
+```{r, "statistics", cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, directory = inpath, design = design)
+# Combine the technical replicates (different runs) by adding the count
+# totals for each gene across the two runs:
+dds <- collapseReplicates(dds, groupby=dds$Library, run = dds$batch)
+dds <- DESeq(dds)
+# What does the data look like?
+head(assay(dds)) # This is the sum of the two runs HTSeq-count output!
+# What are the columns?
+colData(dds)
+results <- results(dds, alpha=0.05)
+results$ensembl <- rownames(results)
+hist(results$pvalue, breaks=20)
+qs <- c(0, quantile(results$baseMean[results$baseMean>0], 0:7/7))
+bins <- cut(results$baseMean, qs)
+levels(bins) <- paste0("~", round(.5*qs[-1] + .5*qs[-length(qs)]))
+ratios <- tapply(results$pvalue, bins, function(p) mean(p<.01, na.rm=TRUE))
+barplot(ratios, xlab="mean normalized count", ylab="ratio of small $p$ values")
+```
+
+### Prepare MA plots:
+```{r, cache=T}
+# For Maximum likelihood estimates:
+resultsMLE <- results(dds, addMLE=TRUE, alpha = 0.05)
+par(mfrow=c(1,2))
+plotMA(resultsMLE, MLE=TRUE, alpha = 0.05, main="unshrunken LFC", ylim=c(-10,10))
+plotMA(results, alpha = 0.05, main="shrunken LFC", ylim=c(-5,8))
+```
+
+### Add Annotation
+```{r, cache=T}
+# Add usefull gene names:
+library(biomaRt)
+
+# Get the archived version:
+mart = useMart("ENSEMBL_MART_ENSEMBL",
+               host="aug2017.archive.ensembl.org")
+#x <- listDatasets(mart)
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org",
+               dataset = "dmelanogaster_gene_ensembl")
+#listAttributes(mart)
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene", "flybasecgid_gene", 
+                                 "external_gene_name"),
+                  filters = "ensembl_gene_id", 
+                  values = results$ensembl,
+                  mart = mart)
+
+idx <- match(results$ensembl, genemap$ensembl_gene_id)
+results$entrez <- genemap$entrezgene[idx]
+results$geneSymbol <- genemap$external_gene_name[idx]
+results$cg <- genemap$flybasecgid_gene[idx]
+```
+
+# Prepare MA plots of small HSP family
+```{r}
+small_hsp <- read.delim(file.path(inpath, "FBgg0000507.txt"))
+colnames(small_hsp) <- c("FlyBase", "NAME", "SYMBOL")
+
+# Small HSP Family:  
+jpeg(file=paste(outpath, "Ez_sHSP_MAP.jpg", sep="/"), width=480, height=480)
+results$shsp <- results$ensembl %in% small_hsp$FlyBase
+plotMA(results, alpha = 0.05, ylim=c(-3,3), colNonSig="gray", colSig="black", colLine="darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), main="HSP20 Family")
+with(results[results$shsp==TRUE,], {points(baseMean, log2FoldChange, col = "red", cex=1, lwd=2)})
+dev.off()
+
+plotMA(results, alpha = 0.05, ylim=c(-3,3), colNonSig="gray", colSig="black", colLine="darkgrey",
+       ylab=expression("log"[2]*" (fold change) (MAP)"), main="HSP20 Family")
+with(results[results$shsp==TRUE,], {points(baseMean, log2FoldChange, col = "red", cex=1, lwd=2)})
+
+```
+
+## Prepare MA plots using MLE:
+```{r}
+# Small HSP Family
+#####################Prepare Publication Plot#########################
+jpeg(file=paste(outpath, "Fig7b_Ez_sHSP_MLE.jpg", sep="/"), 
+     quality=100,
+     res=300,
+     width=960, 
+     height=960)
+resultsMLE$shsp <- rownames(resultsMLE) %in% small_hsp$FlyBase
+par(mai=c(0,0,0,0), mar=c(2,4.5,3,1)+.5)
+plotMA(resultsMLE, alpha = 0.05, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       MLE=TRUE, colLine = "darkgrey", 
+       las=1, cex.lab=1, cex.axis=1, cex.main=1.5,
+       ylab="", xlab = "", xaxp=c(1,2,1), xaxt="n", 
+       main="")
+axis(1, at=c(1,10, 100, 1000, 10000), labels=c(1,10, 100, 1000, 10000), cex.axis=1)
+with(resultsMLE[resultsMLE$shsp==TRUE,], {points(baseMean, lfcMLE, col = "red", cex=1, lwd=3)})
+dev.off()
+######################################################################
+plotMA(resultsMLE, alpha = 0.01, ylim=c(-3,3), colNonSig = "gray", colSig = "black", 
+       MLE=TRUE, colLine = "darkgrey",
+       ylab=expression("log"[2]*" (fold change)"), xlab = "Mean expression", 
+       main="HSP20 Family is \nupregulated in E(z) mutant brains")
+with(resultsMLE[resultsMLE$shsp==TRUE,], {points(baseMean, lfcMLE, col = "red", cex=1, lwd=2)})
+```
+
+```{r}
+Sys.info()
+```
+
+
+

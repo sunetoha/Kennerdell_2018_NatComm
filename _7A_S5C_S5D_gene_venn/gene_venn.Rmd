@@ -1,0 +1,108 @@
+---
+title: "Venn Diagrams of genes up in E(z), down with age"
+author: "Jason Kennerdell"
+date: "6/19/2018"
+output: pdf_document
+---
+# Look for overlap of Genes among different contrasts:
+### Upload the Data
+```{r}
+Ez_dat <- read.csv("~/Desktop/brain/calledDE/EzCalledDE.csv", 
+                   stringsAsFactors = F)
+age_dat <- read.csv("~/Desktop/brain/calledDE/AgeCalledDE.csv", 
+                    stringsAsFactors = F)
+setwd("~/Desktop/brain/_7A_S5C_S5D_gene_venn")
+```
+
+### Select significant genes
+```{r}
+Ez_called_up <- Ez_dat[Ez_dat$log2FoldChange > 0.5,]
+dim(Ez_called_up)
+Ez_called_dn <- Ez_dat[Ez_dat$log2FoldChange < -0.5,]
+dim(Ez_called_dn)
+age_called_up <- age_dat[age_dat$log2FoldChange > 0.5,]
+dim(age_called_up)
+age_called_dn <- age_dat[age_dat$log2FoldChange < -0.5,]
+dim(age_called_dn)
+```
+
+### Print out size of the intersection:
+```{r}
+up_in_Ez_dn_with_age <- intersect(Ez_called_up$X, age_called_dn$X)
+up_in_Ez_dn_with_age
+length(up_in_Ez_dn_with_age)
+
+up_in_Ez_up_with_age <- intersect(Ez_called_up$X, age_called_up$X)
+length(up_in_Ez_up_with_age)
+
+dn_in_Ez_up_with_age <- intersect(Ez_called_dn$X, age_called_up$X)
+length(dn_in_Ez_up_with_age)
+
+dn_in_Ez_dn_with_age <- intersect(Ez_called_dn$X, age_called_dn$X)
+length(dn_in_Ez_dn_with_age)
+
+# save intersection genes:
+write.csv(up_in_Ez_dn_with_age, "up_in_Ez_dn_with_age.csv", quote=F)
+```
+
+## Prepare a Venn Diagram
+```{r, message=F}
+library(VennDiagram)
+library(RColorBrewer)
+my_pal <- brewer.pal(4, "Dark2")
+cairo_pdf("Fig7a_gene_venn.pdf")
+draw.pairwise.venn(dim(age_called_dn)[1], dim(Ez_called_up)[1], 
+                   length(up_in_Ez_dn_with_age),
+                 alpha = 0.50, rotation.degree = 40, 
+                 cat.cex=2, cat.pos=c(345, 148), # 45 -> 25
+                 col = "transparent", fill = my_pal[1:2],
+                 cex = 3, fontfamily = "mono", margin=0.1,
+                 fontface = "bold", cat.fontfamily = "sans"
+                 )
+dev.off()
+draw.pairwise.venn(dim(age_called_dn)[1], dim(Ez_called_up)[1], 
+                   length(up_in_Ez_dn_with_age),
+                 alpha = 0.50, rotation.degree = 40, 
+                 cat.cex=2, cat.pos=c(345, 148), # 45 -> 25
+                 col = "transparent", fill = my_pal[1:2],
+                 cex = 3, fontfamily = "mono", margin=0.1,
+                 fontface = "bold", cat.fontfamily = "sans"
+                 )
+
+## Draw complete venn diagrams
+jpeg("complete_venn_S6D.jpg", width=960, height=960)
+draw.quad.venn(dim(age_called_dn)[1], dim(Ez_called_up)[1], 
+               dim(age_called_up)[1], dim(Ez_called_dn)[1], 
+               n12=length(up_in_Ez_dn_with_age), 
+               n34=length(dn_in_Ez_up_with_age),
+               n23=length(up_in_Ez_up_with_age),
+               n14=length(dn_in_Ez_dn_with_age),
+               n13=0,
+               n24=0,
+               n123=0,
+               n124=0,
+               n234=0,
+               n134=0,
+               n1234=0,
+               #fill=c("cornflowerblue", "green", "yellow", "pink"),
+               fill=my_pal, #brewer.pal(4, "Dark2"),
+               cex = 3, fontfamily = "mono", 
+                 fontface = "bold", cat.fontfamily = "sans",
+               rotation.degree = 90, alpha= 0.5
+               )
+dev.off()
+
+## Draw venn diagrams for genes downregulated in E(z) and upregulated with age
+jpeg("gene_venn_S6C.jpg", width=540, height=540)
+draw.pairwise.venn(dim(age_called_up)[1], dim(Ez_called_dn)[1], 
+                   length(dn_in_Ez_up_with_age),
+                 alpha = 0.50, rotation.degree = 40, 
+                 cat.cex=2, cat.pos=c(345, 148), # 45 -> 25
+                 col = "transparent", fill = my_pal[3:4],
+                 cex = 3, fontfamily = "mono", 
+                 fontface = "bold", cat.fontfamily = "sans")
+dev.off()
+```
+
+
+

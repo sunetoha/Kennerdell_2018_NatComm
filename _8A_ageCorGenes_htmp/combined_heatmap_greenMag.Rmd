@@ -1,0 +1,216 @@
+---
+title: "Prepare a heatmap of the positively age correlated genes for publication."
+author: "Jason Kennerdell"
+date: "8/12/2018"
+output: pdf_document
+---
+```{r, "needed packages", include=FALSE, warning=FALSE, message=FALSE}
+library(DESeq2); library(viridis)
+library(RColorBrewer);library(xlsx);library(biomaRt);library(gplots)
+```
+
+## Input the data and metadata:
+```{r, "input sampleTable"}
+inpath <- "~/Desktop/brain"
+outpath <- "~/Desktop/brain/_8A_ageCorGenes_htmp"
+
+colSet <- brewer.pal(12, "Paired")
+files <- list.files(inpath)
+htseq_files <- files[grepl("^JKL.*txt$", files)]
+sampleNames <- read.csv(file.path(inpath, "SampleNames.csv"))
+sampleTable <- data.frame(fileName = htseq_files,
+                          stringsAsFactors=FALSE)
+sampleTable$Library <- gsub("-counts.txt", "", sampleTable$fileName)
+sampleTable$Library <- gsub("b", "", sampleTable$Library)
+sampleTable$seq.batch <- ifelse(grepl("b", sampleTable$fileName), "B", "A")
+sampleTable$seq.batch <- paste(sampleTable$Library, sampleTable$seq.batch)
+sampleTable <- merge(sampleTable, sampleNames[,1:3], by = "seq.batch")
+sampleTable$genotype <- gsub("-.*$", "", sampleTable$Sample)
+sampleTable$genotype <- gsub("JKLY.... ", "", sampleTable$genotype)
+sampleTable$genotype <- gsub("\\[1118\\]", "", sampleTable$genotype)
+sampleTable$genotype <- factor(sampleTable$genotype, levels = c("w", "Ez"))
+sampleTable <- sampleTable[!is.na(sampleTable$genotype),]
+sampleTable$Temp <- gsub("[A-Z, a-z, -]", "", sampleTable$Sample)
+sampleTable$Temp <- gsub("^11.*$", "25", sampleTable$Temp)
+sampleTable$Temp <- factor(sampleTable$Temp, levels = c("25", "29"))
+sampleTable$age <- gsub("JKLY.*$", "3d", sampleTable$Sample)
+sampleTable$age <- gsub("^[a-zA-z].*$", "20d", sampleTable$age)
+sampleTable$age <- factor(sampleTable$age, levels = c("3d", "20d"))
+sampleTable$condition <- paste(sampleTable$genotype, sampleTable$Temp, 
+                               sampleTable$age, sep = "-")
+sampleTable$color <- c(rep(colSet[7], 4), rep(colSet[9], 2), 
+                       rep(colSet[8], 2), rep(colSet[10], 2), 
+                       rep(colSet[8], 2), rep(colSet[10], 2), 
+                       rep(colSet[8], 2), rep(colSet[10], 2), 
+                       rep(colSet[8], 2), rep(colSet[1], 2),
+                       rep(colSet[10], 2), rep(colSet[8], 2),
+                       rep(colSet[10], 2), rep(colSet[1], 4), 
+                       rep(colSet[7], 2), rep(colSet[9], 4))
+sampleTable
+```
+
+### Set up the statistical model to test for Differentially Expressed genes in E(z) mutants:
+```{r, "design"}
+design <- formula(~ Temp + age + genotype)
+```
+
+## DESeq2 Statistics
+```{r, "statistics"}
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, 
+                                  directory = inpath, 
+                                  design = design)
+# Combine the technical replicates (different runs) by adding the count
+# totals for each gene across the two runs:
+dds <- collapseReplicates(dds, groupby=dds$Library, run = dds$batch)
+dds <- DESeq(dds)
+```
+
+### Import Age-Correlated Genes and look for how these genes change in E(z) mutants:
+```{r}
+ageCorGenes <- read.xlsx(paste(inpath, "nature10810-s2.xls", sep="/"), 
+                         sheetName="Age_Gene_tbl", startRow=3, endRow=177)
+# Add FBgn Names
+#listMarts(host="aug2017.archive.ensembl.org")
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org")
+#listDatasets(mart)
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org",
+               dataset = "dmelanogaster_gene_ensembl")
+#listAttributes(mart)
+genemap2 <- getBM(attributes = c("affy_drosophila_2", "ensembl_gene_id",
+                                 "entrezgene", 
+                                 "flybasecgid_gene"),
+                  filters = "affy_drosophila_2", 
+                  values = as.character(ageCorGenes$Probeset.ID), 
+                  mart = mart)
+
+idx2 <- match(ageCorGenes$Probeset.ID, genemap2$affy_drosophila_2)
+ageCorGenes$ensembl <- genemap2$ensembl_gene_id[idx2]
+ageCorGenes$geneSymbol <- genemap2$external_gene_name[idx2]
+ageCorGenes$cg <- genemap2$flybasecgid_gene[idx2]
+# Four probesets have NA ensembl names
+# Fix a problem getting the FBgn names
+ageCorGenes[is.na(ageCorGenes$ensembl),]
+
+# of CG10494:
+ageCorGenes[140, 12] <- "FBgn0034634"
+# CG5953 Or copia/GIP
+ageCorGenes[50, 12] <- "FBgn0032587" # OR FBgn0013437
+# Two others that are not associated with FBgn
+
+ageCorGenesPos <- ageCorGenes[ageCorGenes$DIR2==1,]
+ageCorGenesNeg <- ageCorGenes[ageCorGenes$DIR2==-1,]
+ageCorGenesPos[is.na(ageCorGenesPos$ensembl),]
+ageCorGenesNeg[is.na(ageCorGenesNeg$ensembl),]
+```
+
+### Prepare rlog transformed data:
+```{r}
+rld <- rlog(dds, blind=FALSE)
+```
+
+## Get E(z) data statistics data without the influence of 3d data in the model:
+```{r}
+design2 <- formula(~ Temp + genotype)
+dds2 <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable[sampleTable$age != "3d",], 
+                                  directory = inpath, design = design2)
+# Combine the technical replicates (different runs) by adding the count
+# totals for each gene across the two runs:
+dds2 <- collapseReplicates(dds2, groupby=dds2$Library, run = dds2$batch)
+dds2 <- DESeq(dds2)
+# What does the data look like?
+head(assay(dds2))
+# What are the columns?
+colData(dds2)
+datEz <- results(dds2, alpha=0.05)
+datEz$ensembl <- rownames(datEz)
+```
+
+## Heatmap for age-correlated genes only:
+```{r}
+# Make a function to assign genes to categories, shaded by log2FoldChange:
+calledEz <- subset(datEz, padj < 0.05 & abs(log2FoldChange) > 0.5)
+relaxedEz <- subset(datEz, padj < 0.05 & abs(log2FoldChange) > 0.3)
+relaxedrelaxedEz <- subset(datEz, padj < 0.05 & abs(log2FoldChange) > 0.15)
+Ezassign <- function(x){
+  y <- rep(NA, length(x))
+  for(i in 1:length(x))
+    if(x[i] %in% calledEz[calledEz$log2FoldChange<0,7])
+      #y[i] <- colSet[2]
+      y[i] <- "#1F78B4"
+    else if(x[i] %in% relaxedEz[relaxedEz$log2FoldChange<0,7])
+      #y[i] <- colSet[12]
+      y[i] <- "#84B5A8"
+    else if(x[i] %in% relaxedrelaxedEz[relaxedrelaxedEz$log2FoldChange<0,7])
+      #y[i] <- colSet[11]
+      y[i] <- "#DDEB9D"
+    else
+      y[i] <- NA
+  y
+}
+
+ageCorPosIndex <- which(rownames(rld) %in% ageCorGenesPos$ensembl)
+# Remove one gene that is not expressed in brains (Hsp22)
+ageCorPosIndex <- ageCorPosIndex[-2]
+dat  <- scale(t(assay(rld)[ageCorPosIndex,]))
+attr(dat, "color") <- colData(dds)$color
+attr(dat, "condition") <- colData(dds)$condition
+gene <- attr(dat, which = "dimnames")[[2]]
+myColors <- Ezassign(gene)
+table(myColors)
+
+# Print out a figure
+par(cex.main=1)
+htmp <- heatmap.2(dat, 
+          lmat=rbind(c(6,5,0), c(0,2,0), c(4,3,1)),
+          lwid=c(1, 4, .1),
+          lhei=c(1.5, 0.2, 4),
+          cexRow=1.2, cexCol=0.75, scale="none", offsetRow=-1, srtRow=45,
+          col=colorpanel(75, "green", "black", "magenta"),
+          trace="none",
+          RowSideColors = attr(dat, which = "color"),
+          ColSideColors = myColors,
+          margins=c(5,0.5),
+          key.par=list(cex.main=1),
+          key=T, main="Positively Age-Correlated Genes",
+          key.xlab = "column z-score",
+          labRow=NA
+          )
+
+jpeg(file=paste(outpath, "Fig_8a_AgeCorPosGreenMag.jpg", sep="/"),
+     quality=100,
+     res=300,
+     height=1920,
+     width=3840)
+par(cex.main=1, bg="transparent")
+heatmap.2(dat,
+          lmat=rbind(c(6,5,0), c(0,2,0), c(4,3,1)),
+          lwid=c(1, 6, .1),
+          lhei=c(1.5, 0.3, 4),
+          cexRow=1.2, cexCol=0.9, scale="none",
+          offsetRow=-1, 
+          offsetCol = -0.5,
+          srtRow=45,
+          col=colorpanel(75, "green", "black", "magenta"),
+          trace="none",
+          RowSideColors = attr(dat, which = "color"),
+          ColSideColors = myColors,
+          margins=c(5,0.5),
+          key.par=list(cex.main=1),
+          key=T, main="", key.title="",
+          key.xlab = "", key.ylab="",
+          labRow=NA
+          )
+dev.off()
+
+# Which are these 16 genes?
+hits <- intersect(calledEz[calledEz$log2FoldChange<0,7],ageCorGenesPos$ensembl)
+calledEz[calledEz$ensembl %in% hits,]
+```
+
+
+
+
+
+
+
+

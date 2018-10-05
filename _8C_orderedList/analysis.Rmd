@@ -1,0 +1,217 @@
+---
+title: "Comparison of E(z) mutant brain expression profiles and age-correlated probesets indicates a \"younger\" brain"
+author: "Jason Kennerdell"
+date: "9/25/2017"
+output: pdf_document
+---
+```{r, "needed packages", include=FALSE, warning=FALSE, message=FALSE}
+library(DESeq2); library(ggplot2); library(grid); library(gridExtra); library(genefilter)
+```
+
+### Input the data and metadata:
+```{r, "input sampleTable", warning=FALSE, message=FALSE, cache=T}
+inpath <- "~/Desktop/brain"
+outpath <- "~/Desktop/brain/_8C_orderedList"
+setwd(inpath)
+files <- list.files()
+htseq_files <- files[grepl("^JKL.*txt$", files)]
+sampleNames <- read.csv("EzSampleNames.csv")
+sampleTable <- data.frame(fileName = htseq_files,
+                          stringsAsFactors=FALSE)
+sampleTable$Library <- gsub("-counts.txt", "", sampleTable$fileName)
+sampleTable$Library <- gsub("b", "", sampleTable$Library)
+sampleTable$seq.batch <- ifelse(grepl("b", sampleTable$fileName), "B", "A")
+sampleTable$seq.batch <- paste(sampleTable$Library, sampleTable$seq.batch)
+sampleTable <- merge(sampleTable[,c(1,3)], sampleNames, by = "seq.batch")
+sampleTable$genotype <- gsub("-.*$", "", sampleTable$Sample)
+sampleTable$genotype <- factor(sampleTable$genotype, levels = c("w", "Ez"))
+sampleTable$Temp <- gsub("[A-Z, a-z, -]", "", sampleTable$Sample)
+sampleTable$Temp <- factor(sampleTable$Temp, levels = c("25", "29"))
+sampleTable$rep <- gsub("^.*-", "", sampleTable$Sample)
+sampleTable$condition <- paste(sampleTable$genotype, sampleTable$Temp, sep = "-")
+sampleTable
+```
+
+### Set up the statistical model
+```{r, "design"}
+design <- formula(~ Temp + genotype)
+```
+
+## DESEq2 Statistics
+```{r, "statistics", cache=TRUE, message=FALSE}
+dds <- DESeqDataSetFromHTSeqCount(sampleTable = sampleTable, directory = inpath, design = design)
+# Combine the technical replicates (different runs) by adding the count
+# totals for each gene across the two runs:
+dds <- collapseReplicates(dds, groupby=dds$Library, run = dds$batch)
+dds <- DESeq(dds, betaPrior=T)
+# What does the data look like?
+head(assay(dds)) # This is the sum of the two runs HTSeq-count output!
+# What are the columns?
+colData(dds)
+results <- results(dds, alpha=0.05)
+results$ensembl <- rownames(results)
+```
+
+### Prepare MA plots:
+```{r, cache=T}
+# For Maximum likelihood estimates:
+resultsMLE <- results(dds, addMLE=TRUE, alpha = 0.05)
+par(mfrow=c(1,2))
+plotMA(resultsMLE, MLE=TRUE, alpha = 0.05, main="unshrunken LFC", ylim=c(-10,10))
+plotMA(results, alpha = 0.05, main="shrunken LFC", ylim=c(-5,8))
+```
+
+### Add Annotation
+```{r, cache=T}
+# Add usefull gene names:
+library(biomaRt)
+
+# Add FBgn Names
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org")
+#listDatasets(mart)
+mart = useMart("ENSEMBL_MART_ENSEMBL", host="aug2017.archive.ensembl.org",
+               dataset = "dmelanogaster_gene_ensembl")
+genemap <- getBM(attributes = c("ensembl_gene_id", "entrezgene", "external_gene_name", "flybasecgid_gene"), filters = "ensembl_gene_id", values = results$ensembl, mart = mart)
+idx <- match(results$ensembl, genemap$ensembl_gene_id)
+results$entrez <- genemap$entrezgene[idx]
+results$geneSymbol <- genemap$external_gene_name[idx]
+results$cg <- genemap$flybasecgid_gene[idx]
+```
+
+## Prepare Ranked lists of genes for OrderedList analysis
+```{r}
+# Using age correlated genes by p value and beta coefficient:
+correl_lst <- read.csv("~/Desktop/brain/GSE25007/ranked_aging_correlated_genes_pvalue_only.csv")
+# How many genes are there in this list?
+dim(correl_lst)[1]
+results_lst <- as.data.frame(results)
+results_lst <- results_lst[!is.na(results_lst$pvalue),]
+results_lst$product <- -log10(results_lst$pvalue)*results_lst$log2FoldChange
+results_lst <- results_lst[order(results_lst$product),]
+# How many genes are there in this list?
+dim(results_lst)[1]
+
+# Select only members of lists that are present in the opposite list
+results_lst <- results_lst[results_lst$ensembl %in% correl_lst$ensembl,]
+head(results_lst)
+tail(results_lst)
+# How many genes are there in this list?
+dim(results_lst)[1]
+
+correl_lst <- correl_lst[correl_lst$ensembl %in% results_lst$ensembl,]
+head(correl_lst)
+tail(correl_lst)
+# How many genes are there in this list?
+dim(correl_lst)[1]
+```
+
+# OrderedList analysis
+## Test for overlap of Positively age correlated genes and down regulated in E(z) genes, one sided:
+```{r}
+library(OrderedList)
+# Test for overlap of age correlated genes and down regulated in E(z) genes, one sided:
+myComp <- compareLists(ID.List1=results_lst$ensembl, 
+                       ID.List2=correl_lst$ensembl, 
+                       mapping=NULL, two.sided = F)
+myComp
+myOverlap <- getOverlap(myComp, max.rank=500, percent=.95)
+#par(mfrow=c(1,2))
+plot(myOverlap, no.title=TRUE, no.legend=TRUE, 
+     main = "Positively Age Correlated genes vs. \n E(z) downregulated genes")
+legend(0,67,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1))
+plot(myOverlap, "scores")
+myOverlap
+
+# Make a publication plot:
+#########################################################################
+jpeg(file=paste(outpath, "Fig_8c.jpg", sep="/"), 
+     quality=100,
+     res=300,
+     width=1440, 
+     height=960)
+par(cex.axis=1.25, cex.lab=2, mar=c(4,5,4,2), col.lab="white")
+plot(myOverlap, no.title=TRUE, no.legend=TRUE, cex.lab=2, 
+     #xlab = NA,#Overlapping gene count",
+     #ylab = NA,#Rank of genes in the two lists",
+     main = "", las=1)
+legend(0,67,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1), cex=.75)
+dev.off()
+##########################################################################
+```
+
+## Test for overlap of age correlated genes and down regulated in E(z) genes, two sided:
+```{r}
+myComp2 <- compareLists(ID.List1=results_lst$ensembl, 
+                        ID.List2=correl_lst$ensembl, 
+                        mapping=NULL, two.sided = T)
+myComp2
+myOverlap2 <- getOverlap(myComp2, max.rank=500, percent=.95)
+par(mfrow=c(1,2))
+plot(myOverlap2, no.title=TRUE, no.legend=TRUE, 
+     main = "Age Correlated genes vs. \n E(z) genes")
+legend(0,67,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1))
+plot(myOverlap2, "scores")
+myOverlap2
+```
+
+## Test for overlap of Negatively age correlated genes and up regulated in E(z) genes, one sided:
+```{r}
+# Test for overlap of age correlated genes and down regulated in E(z) genes, one sided:
+myComp3 <- compareLists(ID.List1=rev(results_lst$ensembl), 
+                       ID.List2=rev(correl_lst$ensembl), 
+                       mapping=NULL, two.sided = F)
+myComp3
+myOverlap3 <- getOverlap(myComp3, max.rank=500, percent=.95)
+par(mfrow=c(1,2))
+plot(myOverlap3, no.title=TRUE, no.legend=TRUE, 
+     main = "Negatively Age Correlated genes vs. \n E(z) upregulated genes")
+legend(0,52,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1))
+plot(myOverlap3, "scores")
+myOverlap3
+
+# Make a publication plot:
+jpeg(file=paste(outpath, "Fig_S5f.jpg", sep="/"), width=360, height=240)
+par(cex.axis=1.25, cex.lab=2, mar=c(4,5,4,2), col.lab="white")
+plot(myOverlap3, no.title=TRUE, no.legend=TRUE, cex.lab=2,
+     main = "", las=1)
+legend(0,52,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1), cex=.75)
+dev.off()
+```
+
+## Test for overlap of age correlated genes and up regulated in E(z) genes, two sided:
+```{r}
+# Test for overlap of age correlated genes and down regulated in E(z) genes, one sided:
+myComp4 <- compareLists(ID.List1=rev(results_lst$ensembl), 
+                       ID.List2=rev(correl_lst$ensembl), 
+                       mapping=NULL, two.sided = T)
+myComp4
+myOverlap4 <- getOverlap(myComp4, max.rank=500, percent=.95)
+par(mfrow=c(1,2))
+plot(myOverlap4, no.title=TRUE, no.legend=TRUE, 
+     main = "Age Correlated genes vs. \n E(z) genes")
+legend(0,67,legend=c("Overlap", "Shuffle 95% confidence interval"), 
+       col=c("black", "orange"), lty=c(1,1))
+plot(myOverlap4, "scores")
+myOverlap4
+```
+
+### Prepare a ranked list for publication: (Supplemental Data 2)
+```{r}
+ranked_list <- correl_lst[,c(2,4)]
+rownames(ranked_list) <- 1:dim(ranked_list)[1]
+write.csv(file=file.path(outpath, "rankedAgingGenes.csv"), ranked_list)
+```
+
+Save image
+```{r}
+save.image(file=file.path(outpath, "OrderedList.RData"))
+```
+
+
+
+
